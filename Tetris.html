@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>テトリスゲーム</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* メインのフォントを設定 */
+        body {
+            font-family: 'M PLUS Rounded 1c', sans-serif;
+            touch-action: manipulation; /* ダブルタップによるズームを無効化 */
+        }
+        /* ゲームキャンバスのスタイル */
+        canvas {
+            background-color: #1a202c;
+            border: 4px solid #4a5568;
+            border-radius: 8px;
+        }
+        /* ボタンのスタイル */
+        .control-button {
+            transition: all 0.2s ease-in-out;
+            user-select: none; /* ボタンのテキスト選択を無効化 */
+        }
+        .control-button:active {
+            transform: scale(0.95);
+            background-color: #4a5568;
+        }
+        /* ゲームオーバーモーダルのスタイル */
+        #gameOverModal {
+            transition: opacity 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center min-h-screen p-4">
+
+    <h1 class="text-4xl font-bold mb-4">テトリス</h1>
+
+    <div class="flex flex-col lg:flex-row items-center justify-center gap-8 w-full max-w-4xl">
+        <!-- ゲームボード -->
+        <div class="relative">
+            <canvas id="tetrisCanvas"></canvas>
+            <!-- ゲームオーバー表示用のモーダル -->
+            <div id="gameOverModal" class="absolute inset-0 bg-black bg-opacity-75 flex-col items-center justify-center hidden rounded-lg">
+                <p id="gameOverText" class="text-5xl font-bold text-red-500">ゲームオーバー</p>
+                <button id="restartButton" class="mt-4 px-6 py-3 bg-blue-600 text-white font-bold rounded-lg shadow-lg hover:bg-blue-700 transition">もう一度プレイ</button>
+            </div>
+        </div>
+
+        <!-- スコアと次のミノ表示 -->
+        <div class="flex flex-col items-center gap-4">
+            <div>
+                <h2 class="text-2xl font-semibold">スコア</h2>
+                <p id="score" class="text-4xl font-bold text-yellow-400">0</p>
+            </div>
+            <div>
+                <h2 class="text-2xl font-semibold">次のミノ</h2>
+                <canvas id="nextMinoCanvas" class="mt-2"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 操作ボタン（スマートフォン向け） -->
+    <div class="mt-6 grid grid-cols-3 gap-2 w-full max-w-sm lg:hidden">
+        <button id="rotateLeftButton" class="control-button col-span-1 bg-gray-700 p-4 rounded-lg text-2xl">↶</button>
+        <button id="hardDropButton" class="control-button col-span-1 bg-red-600 p-4 rounded-lg text-lg font-bold">DROP</button>
+        <button id="rotateRightButton" class="control-button col-span-1 bg-gray-700 p-4 rounded-lg text-2xl">↷</button>
+        
+        <button id="moveLeftButton" class="control-button col-start-1 bg-gray-700 p-4 rounded-lg text-2xl">←</button>
+        <button id="moveDownButton" class="control-button col-start-2 bg-gray-700 p-4 rounded-lg text-2xl">↓</button>
+        <button id="moveRightButton" class="control-button col-start-3 bg-gray-700 p-4 rounded-lg text-2xl">→</button>
+    </div>
+
+    <script>
+        // DOM要素の取得
+        const canvas = document.getElementById('tetrisCanvas');
+        const context = canvas.getContext('2d');
+        const nextCanvas = document.getElementById('nextMinoCanvas');
+        const nextContext = nextCanvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const gameOverModal = document.getElementById('gameOverModal');
+        const restartButton = document.getElementById('restartButton');
+
+        // --- 定数定義 ---
+        const COLS = 10; // フィールドの列数
+        const ROWS = 20; // フィールドの行数
+        const BLOCK_SIZE = 30; // 1ブロックのサイズ（ピクセル）
+        const NEXT_CANVAS_SIZE = 4; // 次のミノ表示エリアのサイズ（ブロック単位）
+
+        // テトリミノ（ミノ）の形状と色
+        const MINOS = {
+            'I': { shape: [[1, 1, 1, 1]], color: '#00f0f0' },
+            'J': { shape: [[1, 0, 0], [1, 1, 1]], color: '#0000f0' },
+            'L': { shape: [[0, 0, 1], [1, 1, 1]], color: '#f0a000' },
+            'O': { shape: [[1, 1], [1, 1]], color: '#f0f000' },
+            'S': { shape: [[0, 1, 1], [1, 1, 0]], color: '#00f000' },
+            'T': { shape: [[0, 1, 0], [1, 1, 1]], color: '#a000f0' },
+            'Z': { shape: [[1, 1, 0], [0, 1, 1]], color: '#f00000' }
+        };
+        const MINO_NAMES = 'IJLOSTZ';
+
+        // --- ゲーム状態変数 ---
+        let gameBoard; // ゲームフィールドの状態を保持する2D配列
+        let currentMino; // 現在操作中のミノ
+        let nextMino; // 次に出現するミノ
+        let score;
+        let isGameOver;
+        let dropInterval; // ミノの落下間隔（ms）
+        let lastTime; // ゲームループの前回実行時間
+        let dropCounter; // ミノ落下のタイミングを計るカウンター
+
+        // --- 初期化処理 ---
+        function initializeGame() {
+            // キャンバスのサイズ設定
+            canvas.width = COLS * BLOCK_SIZE;
+            canvas.height = ROWS * BLOCK_SIZE;
+            context.scale(BLOCK_SIZE, BLOCK_SIZE);
+
+            nextCanvas.width = NEXT_CANVAS_SIZE * BLOCK_SIZE;
+            nextCanvas.height = NEXT_CANVAS_SIZE * BLOCK_SIZE;
+            nextContext.scale(BLOCK_SIZE, BLOCK_SIZE);
+
+            // ゲーム状態のリセット
+            gameBoard = createGameBoard();
+            score = 0;
+            isGameOver = false;
+            dropInterval = 1000; // 最初の落下速度は1秒
+            dropCounter = 0;
+            lastTime = 0;
+
+            // 最初のミノと次のミノを生成
+            currentMino = createRandomMino();
+            nextMino = createRandomMino();
+            
+            updateScore();
+            gameOverModal.style.display = 'none';
+
+            // ゲームループを開始
+            gameLoop();
+        }
+
+        // --- ゲームボード生成 ---
+        function createGameBoard() {
+            // ROWS x COLS の2次元配列を0で初期化して返す
+            return Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+        }
+
+        // --- ミノ関連の関数 ---
+
+        // ランダムなミノを生成
+        function createRandomMino() {
+            const name = MINO_NAMES[Math.floor(Math.random() * MINO_NAMES.length)];
+            const minoData = MINOS[name];
+            return {
+                shape: minoData.shape,
+                color: minoData.color,
+                x: Math.floor(COLS / 2) - Math.floor(minoData.shape[0].length / 2),
+                y: 0
+            };
+        }
+        
+        // ミノをリセット（新しいミノをセット）
+        function resetMino() {
+            currentMino = nextMino;
+            nextMino = createRandomMino();
+            // 新しいミノが生成直後に衝突する場合、ゲームオーバー
+            if (checkCollision(currentMino.shape, { x: currentMino.x, y: currentMino.y })) {
+                isGameOver = true;
+            }
+        }
+        
+        // ミノの回転
+        function rotateMino(mino) {
+            const shape = mino.shape;
+            const newShape = shape[0].map((_, colIndex) => shape.map(row => row[colIndex]).reverse());
+            
+            // 回転後の位置を調整
+            const originalX = mino.x;
+            let offsetX = 1;
+            // 壁際での回転時の位置補正
+            while(checkCollision(newShape, {x: mino.x, y: mino.y})) {
+                mino.x += offsetX;
+                offsetX = -(offsetX + (offsetX > 0 ? 1 : -1));
+                if(offsetX > newShape[0].length) {
+                    mino.x = originalX; // 回転不可
+                    return; 
+                }
+            }
+            mino.shape = newShape;
+        }
+
+        // --- 衝突判定 ---
+        function checkCollision(shape, offset) {
+            for (let y = 0; y < shape.length; y++) {
+                for (let x = 0; x < shape[y].length; x++) {
+                    if (shape[y][x] !== 0) {
+                        const newX = offset.x + x;
+                        const newY = offset.y + y;
+                        // 境界チェックと他のブロックとの衝突チェック
+                        if (newX < 0 || newX >= COLS || newY >= ROWS || (gameBoard[newY] && gameBoard[newY][newX] !== 0)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        // --- ゲームボード操作 ---
+        
+        // ミノをゲームボードに固定
+        function lockMino() {
+            currentMino.shape.forEach((row, y) => {
+                row.forEach((value, x) => {
+                    if (value !== 0) {
+                        gameBoard[currentMino.y + y][currentMino.x + x] = currentMino.color;
+                    }
+                });
+            });
+        }
+        
+        // そろった行を消去
+        function clearLines() {
+            let linesCleared = 0;
+            outer: for (let y = ROWS - 1; y >= 0; y--) {
+                for (let x = 0; x < COLS; x++) {
+                    if (gameBoard[y][x] === 0) {
+                        continue outer;
+                    }
+                }
+                
+                // 行を消去し、上の行を下にずらす
+                const row = gameBoard.splice(y, 1)[0].fill(0);
+                gameBoard.unshift(row);
+                linesCleared++;
+                y++; // 同じ行を再度チェック
+            }
+
+            // スコア加算
+            if (linesCleared > 0) {
+                // 1行: 100, 2行: 300, 3行: 500, 4行: 800
+                score += linesCleared === 1 ? 100 : linesCleared === 2 ? 300 : linesCleared === 3 ? 500 : linesCleared === 4 ? 800 : 0;
+                updateScore();
+                // 速度を上げる
+                dropInterval *= 0.95;
+            }
+        }
+
+        // --- 描画処理 ---
+
+        // 全体の描画
+        function draw() {
+            // 背景をクリア
+            context.fillStyle = '#1a202c';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            
+            drawGameBoard();
+            drawMino(currentMino, context);
+            drawNextMino();
+        }
+        
+        // ゲームボードの描画
+        function drawGameBoard() {
+            gameBoard.forEach((row, y) => {
+                row.forEach((color, x) => {
+                    if (color !== 0) {
+                        context.fillStyle = color;
+                        context.fillRect(x, y, 1, 1);
+                        context.strokeStyle = '#1a202c';
+                        context.lineWidth = 0.05;
+                        context.strokeRect(x, y, 1, 1);
+                    }
+                });
+            });
+        }
+
+        // ミノの描画
+        function drawMino(mino, ctx) {
+            ctx.fillStyle = mino.color;
+            mino.shape.forEach((row, y) => {
+                row.forEach((value, x) => {
+                    if (value !== 0) {
+                        ctx.fillRect(mino.x + x, mino.y + y, 1, 1);
+                        ctx.strokeStyle = '#1a202c';
+                        ctx.lineWidth = 0.05;
+                        ctx.strokeRect(mino.x + x, mino.y + y, 1, 1);
+                    }
+                });
+            });
+        }
+        
+        // 次のミノの描画
+        function drawNextMino() {
+            nextContext.fillStyle = '#1a202c';
+            nextContext.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
+            const offsetX = (NEXT_CANVAS_SIZE - nextMino.shape[0].length) / 2;
+            const offsetY = (NEXT_CANVAS_SIZE - nextMino.shape.length) / 2;
+            const tempMino = {
+                ...nextMino,
+                x: offsetX,
+                y: offsetY
+            };
+            drawMino(tempMino, nextContext);
+        }
+
+        // --- プレイヤー操作 ---
+        
+        function moveMino(direction) {
+            if (isGameOver) return;
+            const newPos = { x: currentMino.x + direction, y: currentMino.y };
+            if (!checkCollision(currentMino.shape, newPos)) {
+                currentMino.x = newPos.x;
+            }
+        }
+
+        function dropMino() {
+            if (isGameOver) return;
+            const newPos = { x: currentMino.x, y: currentMino.y + 1 };
+            if (!checkCollision(currentMino.shape, newPos)) {
+                currentMino.y = newPos.y;
+                dropCounter = 0; // 手動で落としたらタイマーリセット
+            } else {
+                // 着地処理
+                lockMino();
+                clearLines();
+                resetMino();
+            }
+        }
+        
+        function hardDropMino() {
+            if (isGameOver) return;
+            while (!checkCollision(currentMino.shape, { x: currentMino.x, y: currentMino.y + 1 })) {
+                currentMino.y++;
+            }
+            dropMino(); // 着地処理を呼び出す
+        }
+        
+        function rotateCurrentMino() {
+            if (isGameOver) return;
+            rotateMino(currentMino);
+        }
+
+
+        // --- ゲームループ ---
+        function gameLoop(time = 0) {
+            if (isGameOver) {
+                showGameOver();
+                return;
+            }
+
+            const deltaTime = time - lastTime;
+            lastTime = time;
+            dropCounter += deltaTime;
+            
+            if (dropCounter > dropInterval) {
+                dropMino();
+            }
+
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- UI更新 ---
+        
+        function updateScore() {
+            scoreElement.innerText = score;
+        }
+
+        function showGameOver() {
+            gameOverModal.style.display = 'flex';
+        }
+
+        // --- イベントリスナー ---
+        
+        // キーボード入力
+        document.addEventListener('keydown', event => {
+            switch (event.code) {
+                case 'ArrowLeft':
+                case 'KeyA':
+                    moveMino(-1);
+                    break;
+                case 'ArrowRight':
+                case 'KeyD':
+                    moveMino(1);
+                    break;
+                case 'ArrowDown':
+                case 'KeyS':
+                    dropMino();
+                    break;
+                case 'ArrowUp':
+                case 'KeyW': // 時計回り
+                    rotateCurrentMino();
+                    break;
+                case 'KeyQ': // 反時計回り（ここでは同じ回転）
+                    rotateCurrentMino();
+                    break;
+                case 'Space':
+                    event.preventDefault(); // スペースバーでの画面スクロールを防止
+                    hardDropMino();
+                    break;
+            }
+        });
+        
+        // ボタン入力
+        document.getElementById('moveLeftButton').addEventListener('click', () => moveMino(-1));
+        document.getElementById('moveRightButton').addEventListener('click', () => moveMino(1));
+        document.getElementById('moveDownButton').addEventListener('click', () => dropMino());
+        document.getElementById('hardDropButton').addEventListener('click', () => hardDropMino());
+        document.getElementById('rotateLeftButton').addEventListener('click', () => rotateCurrentMino());
+        document.getElementById('rotateRightButton').addEventListener('click', () => rotateCurrentMino());
+        
+        // リスタートボタン
+        restartButton.addEventListener('click', () => {
+            initializeGame();
+        });
+
+
+        // --- ゲーム開始 ---
+        initializeGame();
+
+    </script>
+</body>
+</html>
